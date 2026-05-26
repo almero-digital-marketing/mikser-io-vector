@@ -29,8 +29,9 @@ export default {
     // (query, map, pick) shape so the same mental model applies.
     stores: {
       documents: {
-        // Which entities go into this store
-        query: entity => entity.type === 'document',
+        // Which entities go into this store. Defaults to
+        // `entity => entity.type === 'document'` when omitted.
+        // query: entity => entity.type === 'document',
 
         // Either return a plain object from `map`...
         map: async (entity) => ({
@@ -63,7 +64,7 @@ Provide your OpenAI key either inline (`vector.openai.apiKey`) or as `OPENAI_API
 
 The plugin hooks `onBeforeRender` and iterates the journal for `CREATE`, `UPDATE`, and `DELETE` operations. For each store:
 
-1. Apply `query(entity)` to filter.
+1. Apply `query(entity)` to filter — defaults to `entity => entity.type === 'document'` when not provided.
 2. Build a plain object via `map(entity)` (async, must return an object) or `pick` (path → value). If both are empty, `entity.content` is embedded as-is.
 3. Serialize the object via [TOON](https://github.com/toon-format/toon) — a compact, schema-aware textual format that's lighter on tokens than JSON and gives the embedding model a cleaner signal than ad-hoc string concatenation.
 4. Compute the embedding via OpenAI and upsert into the store's vec0 table.

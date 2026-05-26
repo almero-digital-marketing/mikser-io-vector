@@ -225,9 +225,10 @@ export default ({
         if (!db || Object.keys(stores).length === 0) return
 
         for (const storeName of Object.keys(stores)) {
-            const { query, map, pick } = stores[storeName]
+            const { map, pick } = stores[storeName]
+            const query = stores[storeName].query ?? (entity => entity.type === 'document')
             if (typeof query !== 'function') {
-                logger.warn('Vector store %s has no query function; skipping', storeName)
+                logger.warn('Vector store %s has invalid query (not a function); skipping', storeName)
                 continue
             }
 
