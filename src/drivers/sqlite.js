@@ -5,8 +5,8 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 
-const vecTable = (storeName) => `vec_${storeName}`
-const idsTable = (storeName) => `vec_${storeName}_ids`
+const vecTable = (storeName) => `mikser_vector_${storeName}`
+const idsTable = (storeName) => `mikser_vector_${storeName}_ids`
 
 export async function createDriver({ runtime, dim, stores, connection }) {
     const dbPath = connection?.filename
@@ -87,6 +87,14 @@ export async function createDriver({ runtime, dim, stores, connection }) {
                 distance: r.distance,
                 data: r.data ? JSON.parse(r.data) : null,
             }))
+        },
+
+        async clear() {
+            for (const storeName of Object.keys(stores)) {
+                db.exec(`DELETE FROM ${vecTable(storeName)}`)
+                db.exec(`DELETE FROM ${idsTable(storeName)}`)
+                db.exec(`DELETE FROM sqlite_sequence WHERE name = '${idsTable(storeName)}'`)
+            }
         },
 
         async close() { db.close() },

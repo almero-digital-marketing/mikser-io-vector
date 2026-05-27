@@ -141,9 +141,9 @@ curl -X POST http://localhost:3001/vector/layouts \
 
 ## Storage
 
-**sqlite-vec (`client: 'better-sqlite3'`)** — vectors live in `<runtimeFolder>/vectors.db`. Each configured store has two tables: `vec_<storeName>` (the vec0 virtual table) and `vec_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid` and holding the JSON `data` payload). Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
+**sqlite-vec (`client: 'better-sqlite3'`)** — vectors live in `<runtimeFolder>/vectors.db`. Each configured store has two tables: `mikser_vector_<storeName>` (the vec0 virtual table) and `mikser_vector_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid` and holding the JSON `data` payload). Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
 
-**pgvector (`client: 'pg'`)** — one table per store: `vec_<storeName> (id TEXT PRIMARY KEY, embedding vector(N), data jsonb)`, plus an HNSW index using `vector_cosine_ops`. Requires the `vector` extension on the database (Neon and Supabase have it pre-installed; vanilla Postgres needs `CREATE EXTENSION vector` by a superuser). `--clear` wipes mikser's local state but not the remote tables — `TRUNCATE` them manually if you want a clean re-embed.
+**pgvector (`client: 'pg'`)** — one table per store: `mikser_vector_<storeName> (id TEXT PRIMARY KEY, embedding vector(N), data jsonb)`, plus an HNSW index using `vector_cosine_ops`. Requires the `vector` extension on the database (Neon and Supabase have it pre-installed; vanilla Postgres needs `CREATE EXTENSION vector` by a superuser). `--clear` `TRUNCATE`s every configured store table so the next run re-embeds from scratch.
 
 Both backends use **cosine distance**, so values are comparable when switching backends with the same embedding model.
 

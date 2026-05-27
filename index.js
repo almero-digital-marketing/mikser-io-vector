@@ -121,6 +121,15 @@ export default ({
             Object.keys(stores).join(', ') || '<none>'
         )
 
+        // Honor `--clear`: wipe every store's rows so the upcoming
+        // CREATEs (mikser also clears its catalog) re-embed everything.
+        // Critical for the pg backend whose tables live remotely and
+        // aren't touched by the runtimeFolder wipe.
+        if (runtime.options.clear && Object.keys(stores).length) {
+            await driver.clear()
+            logger.info('Vector store cleared: [%s]', Object.keys(stores).join(', '))
+        }
+
         // Expose programmatic API
         runtime.findSimilar = findSimilar
 

@@ -4,7 +4,7 @@
 // or a self-hosted postgres with pgvector installed).
 import pg from 'pg'
 
-const tableName = (storeName) => `vec_${storeName}`
+const tableName = (storeName) => `mikser_vector_${storeName}`
 
 export async function createDriver({ runtime, dim, stores, connection, logger }) {
     // `connection` is optional — when omitted, pg reads libpq env vars
@@ -88,6 +88,15 @@ export async function createDriver({ runtime, dim, stores, connection, logger })
                 distance: Number(r.distance),
                 data: r.data ?? null,
             }))
+        },
+
+        async clear() {
+            // Single TRUNCATE keeps the schema/index and is fastest on
+            // pg. RESTART IDENTITY is a no-op for these tables (no
+            // serial columns) but kept for explicitness.
+            for (const storeName of Object.keys(stores)) {
+                await pool.query(`TRUNCATE TABLE ${tableName(storeName)} RESTART IDENTITY`)
+            }
         },
 
         async close() { await pool.end() },
