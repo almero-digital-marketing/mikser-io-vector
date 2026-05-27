@@ -1,9 +1,20 @@
-import path from 'node:path'
-import Database from 'better-sqlite3'
-import * as sqliteVec from 'sqlite-vec'
 import OpenAI from 'openai'
 import _ from 'lodash'
+import pMap from 'p-map'
 import { encode as toonEncode } from '@toon-format/toon'
+
+// Driver selection. `client` follows the knex client naming convention
+// so users can write what they're used to. We dynamic-import the chosen
+// driver module so installs that only use sqlite never load pg, and
+// vice versa.
+const DRIVERS = {
+    'better-sqlite3': './src/drivers/sqlite.js',
+    'sqlite': './src/drivers/sqlite.js',
+    'sqlite3': './src/drivers/sqlite.js',
+    'pg': './src/drivers/postgres.js',
+    'postgres': './src/drivers/postgres.js',
+    'postgresql': './src/drivers/postgres.js',
+}
 
 export default ({
     runtime,
@@ -16,18 +27,10 @@ export default ({
     const config = runtime.config.vector ?? {}
     const stores = config.stores ?? {}
 
-    let db
+    let driver
     let openai
     let model
     let dim
-
-    // sqlite-vec stores embeddings keyed by INTEGER rowid; the rest of
-    // mikser's world keys on string entity ids. Each store gets a
-    // companion `<vecTable>_ids` table that maps entity_id → rowid so
-    // updates and deletes can find the right row without scanning the
-    // vec0 table on its (unindexed) auxiliary `+entity_id` column.
-    const vecTable = (storeName) => `vec_${storeName}`
-    const idsTable = (storeName) => `vec_${storeName}_ids`
 
     async function embed(text) {
         const { data } = await openai.embeddings.create({
@@ -38,63 +41,12 @@ export default ({
         return new Float32Array(data[0].embedding)
     }
 
-    function upsertVector(storeName, entityId, vec, data) {
-        const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
-        const dataJson = data == null ? null : JSON.stringify(data)
-        const existing = db.prepare(
-            `SELECT rowid FROM ${idsTable(storeName)} WHERE entity_id = ?`
-        ).get(entityId)
-        if (existing) {
-            db.prepare(
-                `UPDATE ${vecTable(storeName)} SET embedding = ? WHERE rowid = ?`
-            ).run(buf, existing.rowid)
-            db.prepare(
-                `UPDATE ${idsTable(storeName)} SET data = ? WHERE rowid = ?`
-            ).run(dataJson, existing.rowid)
-        } else {
-            const res = db.prepare(
-                `INSERT INTO ${idsTable(storeName)} (entity_id, data) VALUES (?, ?)`
-            ).run(entityId, dataJson)
-            db.prepare(
-                `INSERT INTO ${vecTable(storeName)}(rowid, embedding, entity_id) VALUES (?, ?, ?)`
-            ).run(BigInt(res.lastInsertRowid), buf, entityId)
-        }
-    }
-
-    function deleteVector(storeName, entityId) {
-        const existing = db.prepare(
-            `SELECT rowid FROM ${idsTable(storeName)} WHERE entity_id = ?`
-        ).get(entityId)
-        if (!existing) return
-        db.prepare(`DELETE FROM ${vecTable(storeName)} WHERE rowid = ?`).run(existing.rowid)
-        db.prepare(`DELETE FROM ${idsTable(storeName)} WHERE rowid = ?`).run(existing.rowid)
-    }
-
     async function findSimilar(storeName, text, { limit = 5 } = {}) {
         if (!stores[storeName]) {
             throw new Error(`Unknown vector store: ${storeName}`)
         }
         const vec = await embed(text)
-        const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
-        // vec0 requires LIMIT (or k = ?) directly on the MATCH query, so
-        // we KNN-match in a subquery and join the ids/data table outside.
-        const rows = db.prepare(`
-            SELECT v.entity_id AS id, v.distance AS distance, i.data AS data
-            FROM (
-                SELECT rowid, entity_id, distance
-                FROM ${vecTable(storeName)}
-                WHERE embedding MATCH ?
-                ORDER BY distance
-                LIMIT ?
-            ) v
-            JOIN ${idsTable(storeName)} i ON i.rowid = v.rowid
-            ORDER BY v.distance
-        `).all(buf, limit)
-        return rows.map(r => ({
-            id: r.id,
-            distance: r.distance,
-            data: r.data ? JSON.parse(r.data) : null,
-        }))
+        return driver.findSimilar(storeName, vec, limit)
     }
 
     // Build what we need from an entity: `data` is the original mapped
@@ -146,28 +98,27 @@ export default ({
         model = config.openai?.model ?? 'text-embedding-3-small'
         dim = config.openai?.dim ?? 1536
 
-        const dbPath = path.join(runtime.options.runtimeFolder, 'vectors.db')
-        db = new Database(dbPath)
-        sqliteVec.load(db)
-
-        for (const storeName of Object.keys(stores)) {
-            db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${vecTable(storeName)} USING vec0(
-                embedding float[${dim}],
-                +entity_id TEXT
-            )`)
-            db.exec(`CREATE TABLE IF NOT EXISTS ${idsTable(storeName)} (
-                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-                entity_id TEXT NOT NULL UNIQUE,
-                data TEXT
-            )`)
-            // Pre-1.1.0 databases lacked the data column; add it if missing
-            // so existing vectors.db files keep working.
-            try { db.exec(`ALTER TABLE ${idsTable(storeName)} ADD COLUMN data TEXT`) } catch {}
+        const clientName = config.client ?? 'better-sqlite3'
+        const driverPath = DRIVERS[clientName]
+        if (!driverPath) {
+            throw new Error(
+                `Unknown vector.client "${clientName}". ` +
+                `Supported: ${Object.keys(DRIVERS).join(', ')}`
+            )
         }
+        const { createDriver } = await import(driverPath)
+        driver = await createDriver({
+            runtime,
+            dim,
+            stores,
+            connection: config.connection,
+            logger,
+        })
 
         logger.info(
             'Vector store initialized: %s (model=%s, dim=%d, stores=[%s])',
-            dbPath, model, dim, Object.keys(stores).join(', ') || '<none>'
+            driver.describe(), model, dim,
+            Object.keys(stores).join(', ') || '<none>'
         )
 
         // Expose programmatic API
@@ -186,7 +137,7 @@ export default ({
             const router = express.Router()
             router.use(express.json())
 
-            // POST /api/vector/:storeName  body: { q, limit }
+            // POST /vector/:storeName  body: { q, limit }
             // If the store has a `token` configured, the request must carry
             // a matching `Authorization: Bearer <token>` header.
             router.post('/:storeName', async (req, res) => {
@@ -222,7 +173,12 @@ export default ({
 
     onBeforeRender(async (signal) => {
         const logger = useLogger()
-        if (!db || Object.keys(stores).length === 0) return
+        if (!driver || Object.keys(stores).length === 0) return
+
+        // Per-store concurrency for OpenAI embedding calls. Low default
+        // (4) keeps us comfortably under the default rate limits; bump via
+        // vector.concurrency or per-store.concurrency for larger budgets.
+        const globalConcurrency = config.concurrency ?? 4
 
         for (const storeName of Object.keys(stores)) {
             const { map, pick } = stores[storeName]
@@ -231,34 +187,43 @@ export default ({
                 logger.warn('Vector store %s has invalid query (not a function); skipping', storeName)
                 continue
             }
+            const concurrency = stores[storeName].concurrency ?? globalConcurrency
 
-            for await (let { operation, entity } of useJournal(
-                `Vector ${storeName}`,
-                [OPERATION.CREATE, OPERATION.UPDATE, OPERATION.DELETE],
-                signal,
-            )) {
-                if (!query(entity)) continue
+            await pMap(
+                useJournal(
+                    `Vector ${storeName}`,
+                    [OPERATION.CREATE, OPERATION.UPDATE, OPERATION.DELETE],
+                    signal,
+                ),
+                async ({ operation, entity }) => {
+                    if (!query(entity)) return
 
-                if (operation === OPERATION.DELETE) {
-                    deleteVector(storeName, entity.id)
-                    logger.trace('Vector deleted %s: %s', storeName, entity.id)
-                    continue
-                }
+                    if (operation === OPERATION.DELETE) {
+                        await driver.delete(storeName, entity.id)
+                        logger.trace('Vector deleted %s: %s', storeName, entity.id)
+                        return
+                    }
 
-                const result = await entityToEmbedding(entity, { map, pick })
-                if (!result) {
-                    logger.trace('Vector skip %s — no text: %s', storeName, entity.id)
-                    continue
-                }
+                    const result = await entityToEmbedding(entity, { map, pick })
+                    if (!result) {
+                        logger.trace('Vector skip %s — no text: %s', storeName, entity.id)
+                        return
+                    }
 
-                try {
-                    const vec = await embed(result.text)
-                    upsertVector(storeName, entity.id, vec, result.data)
-                    logger.debug('Vector embedded %s: %s', storeName, entity.id)
-                } catch (err) {
-                    logger.error('Vector embed error %s %s: %s', storeName, entity.id, err.message)
-                }
-            }
+                    try {
+                        const vec = await embed(result.text)
+                        await driver.upsert(storeName, entity.id, vec, result.data)
+                        logger.debug('Vector embedded %s: %s', storeName, entity.id)
+                    } catch (err) {
+                        // Swallow per-entity failures so one bad embedding
+                        // (rate limit, transient network) doesn't poison
+                        // the whole batch. The journal entry stays in
+                        // CREATE state so the next cycle retries.
+                        logger.error('Vector embed error %s %s: %s', storeName, entity.id, err.message)
+                    }
+                },
+                { concurrency, signal },
+            )
         }
     })
 }

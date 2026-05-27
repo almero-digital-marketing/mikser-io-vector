@@ -16,6 +16,17 @@ export default {
   plugins: ['documents', 'layouts', 'render-hbs', 'api', 'vector'],
 
   vector: {
+    // Backend selection. Defaults to local sqlite-vec.
+    //   'better-sqlite3' | 'sqlite' | 'sqlite3'     → sqlite-vec
+    //   'pg' | 'postgres' | 'postgresql'            → pgvector
+    client: 'better-sqlite3',
+
+    // Connection — interpreted per driver:
+    //   sqlite: { filename } (defaults to <runtimeFolder>/vectors.db)
+    //   pg:     a libpq URL string, or pg.PoolConfig, or omit and use
+    //           PGHOST / PGUSER / PGPASSWORD / PGDATABASE / PGSSLMODE.
+    // connection: process.env.DATABASE_URL,
+
     openai: {
       apiKey: process.env.OPENAI_API_KEY,    // or set OPENAI_API_KEY directly
       model: 'text-embedding-3-small',       // default
@@ -24,6 +35,7 @@ export default {
     },
 
     base: '/vector',                      // HTTP mount path; default '/vector'
+    concurrency: 4,                       // parallel OpenAI calls per store; default 4 — per-store override via stores[name].concurrency
 
     // Multiple named stores. Mirrors the data plugin's
     // (query, map, pick) shape so the same mental model applies.
@@ -129,14 +141,16 @@ curl -X POST http://localhost:3001/vector/layouts \
 
 ## Storage
 
-Vectors live in `<runtimeFolder>/vectors.db`. Each configured store has two tables: `vec_<storeName>` (the vec0 virtual table) and `vec_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid`).
+**sqlite-vec (`client: 'better-sqlite3'`)** — vectors live in `<runtimeFolder>/vectors.db`. Each configured store has two tables: `vec_<storeName>` (the vec0 virtual table) and `vec_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid` and holding the JSON `data` payload). Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
 
-Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
+**pgvector (`client: 'pg'`)** — one table per store: `vec_<storeName> (id TEXT PRIMARY KEY, embedding vector(N), data jsonb)`, plus an HNSW index using `vector_cosine_ops`. Requires the `vector` extension on the database (Neon and Supabase have it pre-installed; vanilla Postgres needs `CREATE EXTENSION vector` by a superuser). `--clear` wipes mikser's local state but not the remote tables — `TRUNCATE` them manually if you want a clean re-embed.
+
+Both backends use **cosine distance**, so values are comparable when switching backends with the same embedding model.
 
 ## Notes
 
-- Algorithm is FLAT (brute-force). Plenty fast up to ~100K vectors; for larger sets you'll want a vector DB with HNSW (Redis / Postgres+pgvector / dedicated).
-- Embedding model and dimensions can be changed, but the existing vec0 table column type is fixed at create time. If you change `dim`, also delete `vectors.db` so the table is recreated.
+- sqlite-vec uses FLAT (brute-force) search — plenty fast up to ~100K vectors. Beyond that, use pgvector with its HNSW index.
+- Embedding model and dimensions can be changed, but the existing schema is fixed at create time. If you change `dim`, drop the vector tables so they get re-created.
 - The plugin requires `runtime.options.app` for HTTP search but not for programmatic search — `findSimilar()` works either way.
 
 ## License
