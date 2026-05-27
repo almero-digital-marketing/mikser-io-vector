@@ -1,6 +1,16 @@
 # mikser-io-vector
 
-OpenAI embeddings + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
+OpenAI embeddings + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) or [pgvector](https://github.com/pgvector/pgvector) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
+
+## Why semantic search inside an SSG
+
+At 10k+ documents, search isn't optional — users won't navigate that much content by directory listing or sitemap. Every large content project ends up with a search story; the question is where that story lives.
+
+The usual answer is "integrate Algolia / Typesense / Meilisearch externally" — a separate index pipeline, a separate vendor bill, a separate auth model, and a "keep the index in sync with the content" problem that bites the moment a publish event fires.
+
+This plugin builds the index inside mikser's normal lifecycle. When a document is created, updated, or deleted, the watcher fires, the entity gets re-embedded, and the search index updates — in the same process, on the same journal, alongside every other build step. One pipeline, no second vendor, no out-of-band drift.
+
+The embedding source object is also stored alongside each vector and returned with search results — so the frontend can render the hit (title, summary, image) without a second lookup.
 
 ## Install
 
