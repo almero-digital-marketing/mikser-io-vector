@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import _ from 'lodash'
 import pMap from 'p-map'
 import { encode as toonEncode } from '@toon-format/toon'
+import { z } from 'zod'
 
 // Driver selection. `client` follows the knex client naming convention
 // so users can write what they're used to. We dynamic-import the chosen
@@ -176,8 +177,61 @@ export default ({
             })
 
             runtime.options.app.use(base, router)
-            logger.info('Vector search mounted: %s/:storeName', base)
+            const location = runtime.options.port
+                ? `http://localhost:${runtime.options.port}${base}/:storeName`
+                : `${base}/:storeName`
+            logger.info('Vector search mounted: %s', location)
         }
+    })
+
+    // MCP tool registration. Same pattern as the api / layouts /
+    // preview plugins in mikser-io core: gate on runtime.options.mcp
+    // inside an onLoaded handler. Lives in the vector plugin (not
+    // core) per ADR-0006 — domain logic owned by the plugin, the
+    // substrate stays in core.
+    onLoaded(() => {
+        if (!runtime.options.mcp) return
+        const mcp = runtime.options.mcp
+        const logger = useLogger()
+
+        mcp.simpleTool(
+            'mikser_vector_find_similar',
+            'Semantic search over a configured vector store. Returns the top-N items closest to the query in embedding space, each with its original mapped data attached. Use this to answer "find pages similar to X" or "which entities are about Y" where exact filtering via mikser_api_list_entities would miss synonyms, translations, and paraphrases. Available store names are configured under vector.stores in mikser.config.js and visible in the mikser://config resource.',
+            {
+                store: z.string().describe('Vector store name. Configured under vector.stores in mikser.config.js. Read mikser://config to discover what stores exist.'),
+                query: z.string().describe('Free-text query. Embedded via the configured OpenAI model and matched against the store via cosine similarity.'),
+                limit: z.number().int().min(1).max(50).optional().describe('Max results to return. Default 5, capped at 50.'),
+            },
+            async ({ store, query, limit = 5 }) => {
+                const ok = (data) => ({
+                    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+                })
+                const fail = (msg) => ({
+                    isError: true,
+                    content: [{ type: 'text', text: msg }],
+                })
+                try {
+                    if (!stores[store]) {
+                        const known = Object.keys(stores).join(', ') || '<none configured>'
+                        return fail(`Unknown vector store: ${store}. Available: ${known}.`)
+                    }
+                    const effectiveLimit = Math.min(50, Math.max(1, limit))
+                    const results = await findSimilar(store, query, { limit: effectiveLimit })
+                    return ok({
+                        store,
+                        query,
+                        limit: effectiveLimit,
+                        count: results.length,
+                        results,
+                    })
+                } catch (err) {
+                    logger.error('MCP mikser_vector_find_similar error: %s', err.message)
+                    return fail(err.message)
+                }
+            },
+        )
+
+        logger.debug('MCP tool registered: mikser_vector_find_similar (vector plugin)')
     })
 
     onBeforeRender(async (signal) => {

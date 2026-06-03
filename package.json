@@ -1,6 +1,6 @@
 {
   "name": "mikser-io-vector",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "OpenAI embeddings + sqlite-vec storage and search for mikser-io",
   "main": "index.js",
   "type": "module",
@@ -16,7 +16,7 @@
   },
   "homepage": "https://github.com/almero-digital-marketing/mikser-io-vector#readme",
   "peerDependencies": {
-    "mikser-io": "^6.0.0"
+    "mikser-io": "^7.0.0"
   },
   "dependencies": {
     "@toon-format/toon": "^2.3.0",
@@ -25,6 +25,7 @@
     "openai": "^4.78.0",
     "p-map": "^7.0.4",
     "pg": "^8.21.0",
-    "sqlite-vec": "^0.1.7-alpha.2"
+    "sqlite-vec": "^0.1.7-alpha.2",
+    "zod": "^3.25.0"
   }
 }
