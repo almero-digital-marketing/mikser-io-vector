@@ -1,6 +1,6 @@
 {
   "name": "mikser-io-vector",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "OpenAI embeddings + sqlite-vec storage and search for mikser-io",
   "main": "index.js",
   "type": "module",
