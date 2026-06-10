@@ -1,46 +1,75 @@
-// Sqlite-vec backed vector store. Stores embeddings in a vec0 virtual
-// table per logical store plus a companion `<store>_ids` table mapping
-// string entity_id → integer rowid and holding the JSON `data` payload
-// returned with search results.
+// Sqlite-vec backed vector store, layered onto the engine's shared
+// `mikser.sqlite` connection. The plugin loads sqlite-vec on that
+// connection once at setup, then registers per-store vec0 virtual
+// tables (`mikser_vector_<store>`) plus companion ids tables
+// (`mikser_vector_<store>_ids`) via `registerSchema` — applied
+// immediately because the engine database is already open by the time
+// the vector plugin's `onLoaded` runs.
 //
-// Sqlite + sqlite-vec is the only backend. We considered a pluggable
-// driver abstraction with sqlite + pgvector, but the engine ran into
-// the worker-side sync-vs-async wall on its own catalog migration and
-// dropped the postgres path. Vector follows that decision: one shape
-// to support, one set of edge cases to test.
-import path from 'node:path'
-import Database from 'better-sqlite3'
+// One substrate, one file (`runtime/mikser.sqlite`), one set of WAL /
+// foreign_keys / synchronous pragmas. Deleting an entity from the
+// catalog cascades to its vector rows via the FK on
+// `mikser_vector_<store>_ids.entity_id → mikser_entities.id`.
+//
+// Sqlite + sqlite-vec is the only backend. The pluggable
+// sqlite-or-postgres abstraction was dropped during the engine's
+// catalog migration (postgres-async vs template-sync wall); vector
+// follows the same shape.
 import * as sqliteVec from 'sqlite-vec'
 
 const vecTable = (storeName) => `mikser_vector_${storeName}`
 const idsTable = (storeName) => `mikser_vector_${storeName}_ids`
 
-export async function createStore({ runtime, dim, stores, connection }) {
-    const dbPath = connection?.filename
-        ?? path.join(runtime.options.runtimeFolder, 'vectors.db')
-    const db = new Database(dbPath)
-    sqliteVec.load(db)
+export async function createStore({ db, dim, stores, registerSchema }) {
+    if (!db?.isOpen) {
+        throw new Error('createStore requires an open engine database handle (useDatabase()).')
+    }
+
+    // Load sqlite-vec on the shared connection. Extension state is
+    // per-connection, so this must run before any vec0 CREATE. Workers'
+    // read-only handles don't load sqlite-vec — they don't query
+    // vector tables, and sqlite-vec doesn't need to be loaded for the
+    // engine handle to function in any other capacity.
+    sqliteVec.load(db.handle)
 
     for (const storeName of Object.keys(stores)) {
-        // distance_metric=cosine keeps L2-on-normalized and cosine
-        // distances comparable across backends. OpenAI embeddings are
-        // unit-normalized so cosine is the natural metric.
-        db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS ${vecTable(storeName)} USING vec0(
-            embedding float[${dim}] distance_metric=cosine,
-            +entity_id TEXT
-        )`)
-        db.exec(`CREATE TABLE IF NOT EXISTS ${idsTable(storeName)} (
-            rowid INTEGER PRIMARY KEY AUTOINCREMENT,
-            entity_id TEXT NOT NULL UNIQUE,
-            data TEXT
-        )`)
-        // Pre-1.1.0 databases lacked the data column; add it if missing
-        // so existing vectors.db files keep working.
-        try { db.exec(`ALTER TABLE ${idsTable(storeName)} ADD COLUMN data TEXT`) } catch {}
+        // distance_metric=cosine: OpenAI embeddings are unit-normalized,
+        // so cosine is the natural metric and stays comparable to
+        // L2-on-normalized.
+        registerSchema(vecTable(storeName), `
+            CREATE VIRTUAL TABLE IF NOT EXISTS ${vecTable(storeName)} USING vec0(
+                embedding float[${dim}] distance_metric=cosine,
+                +entity_id TEXT
+            )
+        `)
+        // FK to mikser_entities.id with ON DELETE CASCADE so catalog
+        // deletes auto-purge orphaned vector rows. The companion vec0
+        // row is dropped via the trigger below (vec0 virtual tables
+        // don't support FK directly, so we route deletes through the
+        // ids table).
+        registerSchema(idsTable(storeName), `
+            CREATE TABLE IF NOT EXISTS ${idsTable(storeName)} (
+                rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_id TEXT NOT NULL UNIQUE
+                    REFERENCES mikser_entities(id) ON DELETE CASCADE,
+                data TEXT
+            )
+        `)
+        // When the catalog deletes an entity, the FK cascades into the
+        // ids table; this trigger then propagates the delete into the
+        // vec0 virtual table by rowid (vec0 doesn't observe FK cascades
+        // directly).
+        registerSchema(`${idsTable(storeName)}_cascade_trigger`, `
+            CREATE TRIGGER IF NOT EXISTS ${idsTable(storeName)}_cascade
+            AFTER DELETE ON ${idsTable(storeName)}
+            BEGIN
+                DELETE FROM ${vecTable(storeName)} WHERE rowid = OLD.rowid;
+            END
+        `)
     }
 
     return {
-        describe: () => `sqlite-vec at ${dbPath}`,
+        describe: () => `sqlite-vec on engine db (${db.path})`,
 
         async upsert(storeName, entityId, vec, data) {
             const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
@@ -64,18 +93,16 @@ export async function createStore({ runtime, dim, stores, connection }) {
         },
 
         async delete(storeName, entityId) {
-            const existing = db.prepare(
-                `SELECT rowid FROM ${idsTable(storeName)} WHERE entity_id = ?`
-            ).get(entityId)
-            if (!existing) return
-            db.prepare(`DELETE FROM ${vecTable(storeName)} WHERE rowid = ?`).run(existing.rowid)
-            db.prepare(`DELETE FROM ${idsTable(storeName)} WHERE rowid = ?`).run(existing.rowid)
+            // The trigger handles the vec0 side; we only need to drop
+            // the ids row. (When the deletion arrives via FK cascade —
+            // catalog deleted the entity — the same trigger fires.)
+            db.prepare(`DELETE FROM ${idsTable(storeName)} WHERE entity_id = ?`).run(entityId)
         },
 
         async findSimilar(storeName, vec, limit) {
             const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
             // vec0 requires LIMIT (or k = ?) directly on the MATCH query,
-            // so we KNN-match in a subquery and join the ids/data table
+            // so KNN-match in a subquery and join the ids/data table
             // outside.
             const rows = db.prepare(`
                 SELECT v.entity_id AS id, v.distance AS distance, i.data AS data
@@ -104,6 +131,7 @@ export async function createStore({ runtime, dim, stores, connection }) {
             }
         },
 
-        async close() { db.close() },
+        // No-op: the engine owns the connection and closes it.
+        async close() {},
     }
 }

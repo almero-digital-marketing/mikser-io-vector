@@ -11,6 +11,8 @@ export default ({
     onBeforeRender,
     useLogger,
     useJournal,
+    useDatabase,
+    registerSchema,
     constants: { OPERATION },
 }) => {
     const config = runtime.config.vector ?? {}
@@ -87,12 +89,18 @@ export default ({
         model = config.openai?.model ?? 'text-embedding-3-small'
         dim = config.openai?.dim ?? 1536
 
+        const db = useDatabase()
+        if (!db?.isOpen) {
+            throw new Error(
+                'Vector plugin requires the engine database to be open before its onLoaded fires. ' +
+                'This indicates a hook ordering bug — file an issue.'
+            )
+        }
         store = await createStore({
-            runtime,
+            db,
             dim,
             stores,
-            connection: config.connection,
-            logger,
+            registerSchema,
         })
 
         logger.info(
