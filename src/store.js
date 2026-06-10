@@ -1,6 +1,13 @@
-// sqlite-vec driver: stores vectors in a vec0 virtual table per store
-// plus a companion `<store>_ids` table mapping string entity_id → integer
-// rowid and holding the JSON `data` payload returned with search results.
+// Sqlite-vec backed vector store. Stores embeddings in a vec0 virtual
+// table per logical store plus a companion `<store>_ids` table mapping
+// string entity_id → integer rowid and holding the JSON `data` payload
+// returned with search results.
+//
+// Sqlite + sqlite-vec is the only backend. We considered a pluggable
+// driver abstraction with sqlite + pgvector, but the engine ran into
+// the worker-side sync-vs-async wall on its own catalog migration and
+// dropped the postgres path. Vector follows that decision: one shape
+// to support, one set of edge cases to test.
 import path from 'node:path'
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
@@ -8,7 +15,7 @@ import * as sqliteVec from 'sqlite-vec'
 const vecTable = (storeName) => `mikser_vector_${storeName}`
 const idsTable = (storeName) => `mikser_vector_${storeName}_ids`
 
-export async function createDriver({ runtime, dim, stores, connection }) {
+export async function createStore({ runtime, dim, stores, connection }) {
     const dbPath = connection?.filename
         ?? path.join(runtime.options.runtimeFolder, 'vectors.db')
     const db = new Database(dbPath)
@@ -33,7 +40,7 @@ export async function createDriver({ runtime, dim, stores, connection }) {
     }
 
     return {
-        describe: () => `sqlite ${dbPath}`,
+        describe: () => `sqlite-vec at ${dbPath}`,
 
         async upsert(storeName, entityId, vec, data) {
             const buf = Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)

@@ -1,6 +1,6 @@
 # mikser-io-vector
 
-OpenAI embeddings + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) or [pgvector](https://github.com/pgvector/pgvector) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
+OpenAI embeddings + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
 
 ## Why semantic search inside an SSG
 
@@ -26,16 +26,9 @@ export default {
   plugins: ['documents', 'layouts', 'render-hbs', 'api', 'vector'],
 
   vector: {
-    // Backend selection. Defaults to local sqlite-vec.
-    //   'better-sqlite3' | 'sqlite' | 'sqlite3'     → sqlite-vec
-    //   'pg' | 'postgres' | 'postgresql'            → pgvector
-    client: 'better-sqlite3',
-
-    // Connection — interpreted per driver:
-    //   sqlite: { filename } (defaults to <runtimeFolder>/vectors.db)
-    //   pg:     a libpq URL string, or pg.PoolConfig, or omit and use
-    //           PGHOST / PGUSER / PGPASSWORD / PGDATABASE / PGSSLMODE.
-    // connection: process.env.DATABASE_URL,
+    // Connection — sqlite file path. Defaults to
+    // <runtimeFolder>/vectors.db.
+    // connection: { filename: '/var/data/vectors.db' },
 
     openai: {
       apiKey: process.env.OPENAI_API_KEY,    // or set OPENAI_API_KEY directly
@@ -151,15 +144,13 @@ curl -X POST http://localhost:3001/vector/layouts \
 
 ## Storage
 
-**sqlite-vec (`client: 'better-sqlite3'`)** — vectors live in `<runtimeFolder>/vectors.db`. Each configured store has two tables: `mikser_vector_<storeName>` (the vec0 virtual table) and `mikser_vector_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid` and holding the JSON `data` payload). Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
+Vectors live in `<runtimeFolder>/vectors.db` (sqlite-vec). Each configured store has two tables: `mikser_vector_<storeName>` (the vec0 virtual table) and `mikser_vector_<storeName>_ids` (a regular table mapping string `entity_id` to numeric `rowid` and holding the JSON `data` payload). Wipe with `--clear` to start fresh — every entity will be re-embedded on the next run.
 
-**pgvector (`client: 'pg'`)** — one table per store: `mikser_vector_<storeName> (id TEXT PRIMARY KEY, embedding vector(N), data jsonb)`, plus an HNSW index using `vector_cosine_ops`. Requires the `vector` extension on the database (Neon and Supabase have it pre-installed; vanilla Postgres needs `CREATE EXTENSION vector` by a superuser). `--clear` `TRUNCATE`s every configured store table so the next run re-embeds from scratch.
-
-Both backends use **cosine distance**, so values are comparable when switching backends with the same embedding model.
+Distances are **cosine** — OpenAI embeddings are unit-normalized so cosine is the natural metric.
 
 ## Notes
 
-- sqlite-vec uses FLAT (brute-force) search — plenty fast up to ~100K vectors. Beyond that, use pgvector with its HNSW index.
+- sqlite-vec uses FLAT (brute-force) search — plenty fast up to ~100K vectors.
 - Embedding model and dimensions can be changed, but the existing schema is fixed at create time. If you change `dim`, drop the vector tables so they get re-created.
 - The plugin requires `runtime.options.app` for HTTP search but not for programmatic search — `findSimilar()` works either way.
 

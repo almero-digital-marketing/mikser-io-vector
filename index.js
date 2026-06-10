@@ -3,19 +3,7 @@ import _ from 'lodash'
 import pMap from 'p-map'
 import { encode as toonEncode } from '@toon-format/toon'
 import { z } from 'zod'
-
-// Driver selection. `client` follows the knex client naming convention
-// so users can write what they're used to. We dynamic-import the chosen
-// driver module so installs that only use sqlite never load pg, and
-// vice versa.
-const DRIVERS = {
-    'better-sqlite3': './src/drivers/sqlite.js',
-    'sqlite': './src/drivers/sqlite.js',
-    'sqlite3': './src/drivers/sqlite.js',
-    'pg': './src/drivers/postgres.js',
-    'postgres': './src/drivers/postgres.js',
-    'postgresql': './src/drivers/postgres.js',
-}
+import { createStore } from './src/store.js'
 
 export default ({
     runtime,
@@ -28,7 +16,7 @@ export default ({
     const config = runtime.config.vector ?? {}
     const stores = config.stores ?? {}
 
-    let driver
+    let store
     let openai
     let model
     let dim
@@ -47,7 +35,7 @@ export default ({
             throw new Error(`Unknown vector store: ${storeName}`)
         }
         const vec = await embed(text)
-        return driver.findSimilar(storeName, vec, limit)
+        return store.findSimilar(storeName, vec, limit)
     }
 
     // Build what we need from an entity: `data` is the original mapped
@@ -99,16 +87,7 @@ export default ({
         model = config.openai?.model ?? 'text-embedding-3-small'
         dim = config.openai?.dim ?? 1536
 
-        const clientName = config.client ?? 'better-sqlite3'
-        const driverPath = DRIVERS[clientName]
-        if (!driverPath) {
-            throw new Error(
-                `Unknown vector.client "${clientName}". ` +
-                `Supported: ${Object.keys(DRIVERS).join(', ')}`
-            )
-        }
-        const { createDriver } = await import(driverPath)
-        driver = await createDriver({
+        store = await createStore({
             runtime,
             dim,
             stores,
@@ -118,16 +97,14 @@ export default ({
 
         logger.info(
             'Vector store initialized: %s (model=%s, dim=%d, stores=[%s])',
-            driver.describe(), model, dim,
+            store.describe(), model, dim,
             Object.keys(stores).join(', ') || '<none>'
         )
 
         // Honor `--clear`: wipe every store's rows so the upcoming
         // CREATEs (mikser also clears its catalog) re-embed everything.
-        // Critical for the pg backend whose tables live remotely and
-        // aren't touched by the runtimeFolder wipe.
         if (runtime.options.clear && Object.keys(stores).length) {
-            await driver.clear()
+            await store.clear()
             logger.info('Vector store cleared: [%s]', Object.keys(stores).join(', '))
         }
 
@@ -236,7 +213,7 @@ export default ({
 
     onBeforeRender(async (signal) => {
         const logger = useLogger()
-        if (!driver || Object.keys(stores).length === 0) return
+        if (!store || Object.keys(stores).length === 0) return
 
         // Per-store concurrency for OpenAI embedding calls. Low default
         // (4) keeps us comfortably under the default rate limits; bump via
@@ -262,7 +239,7 @@ export default ({
                     if (!query(entity)) return
 
                     if (operation === OPERATION.DELETE) {
-                        await driver.delete(storeName, entity.id)
+                        await store.delete(storeName, entity.id)
                         logger.trace('Vector deleted %s: %s', storeName, entity.id)
                         return
                     }
@@ -275,7 +252,7 @@ export default ({
 
                     try {
                         const vec = await embed(result.text)
-                        await driver.upsert(storeName, entity.id, vec, result.data)
+                        await store.upsert(storeName, entity.id, vec, result.data)
                         logger.debug('Vector embedded %s: %s', storeName, entity.id)
                     } catch (err) {
                         // Swallow per-entity failures so one bad embedding
