@@ -15,8 +15,6 @@
 // sqlite-or-postgres abstraction was dropped during the engine's
 // catalog migration (postgres-async vs template-sync wall); vector
 // follows the same shape.
-import * as sqliteVec from 'sqlite-vec'
-
 const vecTable = (storeName) => `mikser_vector_${storeName}`
 const idsTable = (storeName) => `mikser_vector_${storeName}_ids`
 
@@ -25,12 +23,14 @@ export async function createStore({ db, dim, stores, registerSchema }) {
         throw new Error('createStore requires an open engine database handle (useDatabase()).')
     }
 
-    // Load sqlite-vec on the shared connection. Extension state is
-    // per-connection, so this must run before any vec0 CREATE. Workers'
-    // read-only handles don't load sqlite-vec — they don't query
-    // vector tables, and sqlite-vec doesn't need to be loaded for the
-    // engine handle to function in any other capacity.
-    sqliteVec.load(db.handle)
+    // sqlite-vec is loaded into the engine connection via
+    // loadExtension() at the plugin's module-eval (see index.js). The
+    // engine substrate runs all loadExtension callbacks inside its
+    // setupConnection, after the raw new Database() but before any
+    // schema apply — so vec0 is available before any vec0 CREATE
+    // here, and before any other onLoaded prepares a statement that
+    // would otherwise trip the schema validator on second-and-later
+    // opens.
 
     for (const storeName of Object.keys(stores)) {
         // distance_metric=cosine: OpenAI embeddings are unit-normalized,

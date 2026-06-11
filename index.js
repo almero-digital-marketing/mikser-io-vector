@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import _ from 'lodash'
 import pMap from 'p-map'
+import * as sqliteVec from 'sqlite-vec'
 import { encode as toonEncode } from '@toon-format/toon'
 import { z } from 'zod'
 import { createStore } from './src/store.js'
@@ -13,8 +14,24 @@ export default ({
     useJournal,
     useDatabase,
     registerSchema,
+    loadExtension,
     constants: { OPERATION },
 }) => {
+    // Register the sqlite-vec runtime extension on the engine
+    // connection. Must run before any vec0 schema apply or any prepare
+    // that touches a vec0 table — the engine substrate calls every
+    // loadExtension callback inside its setupConnection, between the
+    // raw new Database() and the schema apply pass, on every open.
+    //
+    // Without this, the second mikser run after sqlite-vec tables exist
+    // in the database file would fail every prepare with "no such
+    // module: vec0" because sqlite validates the whole schema during
+    // prepare and the vec0 module wouldn't be loaded yet when other
+    // plugins' onLoaded fire. Requires mikser-io >= 8.3.8.
+    if (loadExtension) {
+        loadExtension(handle => sqliteVec.load(handle))
+    }
+
     const config = runtime.config.vector ?? {}
     const stores = config.stores ?? {}
 
