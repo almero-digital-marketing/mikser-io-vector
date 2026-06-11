@@ -14,22 +14,24 @@ export default ({
     useJournal,
     useDatabase,
     registerSchema,
-    loadExtension,
+    onProvision,
     constants: { OPERATION },
 }) => {
-    // Register the sqlite-vec runtime extension on the engine
-    // connection. Must run before any vec0 schema apply or any prepare
-    // that touches a vec0 table — the engine substrate calls every
-    // loadExtension callback inside its setupConnection, between the
-    // raw new Database() and the schema apply pass, on every open.
+    // Load sqlite-vec on every open via the engine's onProvision hook.
+    // The substrate calls every onProvision callback inside its
+    // setupConnection — after PRAGMAs and the mikser_meta bootstrap,
+    // before any schema apply and before any other plugin's onLoaded
+    // touches the connection. Without this, the second mikser run
+    // (vec0 tables already exist in the file) would fail every prepare
+    // with "no such module: vec0" because sqlite validates the full
+    // schema during prepare and the vec0 module isn't loaded yet.
     //
-    // Without this, the second mikser run after sqlite-vec tables exist
-    // in the database file would fail every prepare with "no such
-    // module: vec0" because sqlite validates the whole schema during
-    // prepare and the vec0 module wouldn't be loaded yet when other
-    // plugins' onLoaded fire. Requires mikser-io >= 8.3.8.
-    if (loadExtension) {
-        loadExtension(handle => sqliteVec.load(handle))
+    // The ctx also exposes firstRun / upgraded / previousVersion if
+    // we ever need to do one-time setup or upgrade migrations; today
+    // the extension load is the same shape on every open. Requires
+    // mikser-io >= 8.3.9.
+    if (onProvision) {
+        onProvision(ctx => sqliteVec.load(ctx.handle))
     }
 
     const config = runtime.config.vector ?? {}
