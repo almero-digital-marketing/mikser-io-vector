@@ -116,10 +116,14 @@ export async function createStore({ db, dim, stores, registerSchema }) {
                 JOIN ${idsTable(storeName)} i ON i.rowid = v.rowid
                 ORDER BY v.distance
             `).all(buf, limit)
+            // Spread the mapped object at the top level so callers can
+            // read `result.title` instead of `result.data.title`. `id`
+            // and `distance` are engine-provided and override any
+            // same-named field in `map()` output.
             return rows.map(r => ({
+                ...(r.data ? JSON.parse(r.data) : null),
                 id: r.id,
                 distance: r.distance,
-                data: r.data ? JSON.parse(r.data) : null,
             }))
         },
 

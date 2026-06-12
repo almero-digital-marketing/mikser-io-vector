@@ -6,35 +6,21 @@ import { encode as toonEncode } from '@toon-format/toon'
 import { z } from 'zod'
 import { createStore } from './src/store.js'
 
-export default ({
-    runtime,
-    onLoaded,
-    onBeforeRender,
-    useLogger,
-    useJournal,
-    useDatabase,
-    registerSchema,
-    onProvision,
-    constants: { OPERATION },
-}) => {
-    // Load sqlite-vec on every open via the engine's onProvision hook.
-    // The substrate calls every onProvision callback inside its
-    // setupConnection — after PRAGMAs and the mikser_meta bootstrap,
-    // before any schema apply and before any other plugin's onLoaded
-    // touches the connection. Without this, the second mikser run
-    // (vec0 tables already exist in the file) would fail every prepare
-    // with "no such module: vec0" because sqlite validates the full
-    // schema during prepare and the vec0 module isn't loaded yet.
-    //
-    // The ctx also exposes firstRun / upgraded / previousVersion if
-    // we ever need to do one-time setup or upgrade migrations; today
-    // the extension load is the same shape on every open. Requires
-    // mikser-io >= 8.3.9.
-    if (onProvision) {
-        onProvision(ctx => sqliteVec.load(ctx.handle))
-    }
+export function vector(options = {}) {
+    return ({
+        runtime,
+        onLoaded,
+        onBeforeRender,
+        useLogger,
+        useJournal,
+        useDatabase,
+        registerSchema,
+        onProvision,
+        constants: { OPERATION },
+    }) => {
+    onProvision(ctx => sqliteVec.load(ctx.handle))
 
-    const config = runtime.config.vector ?? {}
+    const config = options
     const stores = config.stores ?? {}
 
     let store
@@ -293,4 +279,5 @@ export default ({
             )
         }
     })
+    }
 }

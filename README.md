@@ -96,15 +96,16 @@ import { runtime } from 'mikser-io'
 const results = await runtime.findSimilar('documents', 'how do I publish a report', { limit: 5 })
 // → [
 //     {
+//       title: 'Mikser Quarterly Report',
+//       content: '...',
 //       id: '/documents/en/report.md',
 //       distance: 0.123,
-//       data: { title: 'Mikser Quarterly Report', content: '...' },
 //     },
 //     ...
 //   ]
 ```
 
-`data` is the *original object* returned by your `map(entity)` (or built from `pick`) — the thing that was TOON-encoded before embedding. Use it to surface human-readable metadata alongside the score without a second lookup.
+Each hit spreads the original object returned by your `map(entity)` (or built from `pick`) at the top level, plus `id` and `distance`. `map`'s output is the same thing that was TOON-encoded before embedding — use it to surface human-readable metadata alongside the score without a second lookup. `id` and `distance` are engine-set and override any same-named field from `map()`.
 
 ## Search — HTTP
 
@@ -118,9 +119,10 @@ curl -X POST http://localhost:3001/vector/documents \
 # {
 #   "results": [
 #     {
+#       "title": "Mikser Quarterly Report",
+#       "content": "...",
 #       "id": "/documents/en/report.md",
-#       "distance": 0.123,
-#       "data": { "title": "Mikser Quarterly Report", "content": "..." }
+#       "distance": 0.123
 #     },
 #     ...
 #   ]
