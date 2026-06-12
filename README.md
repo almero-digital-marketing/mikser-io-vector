@@ -22,58 +22,65 @@ npm install mikser-io-vector
 
 ```js
 // mikser.config.js
+import { documents, files, layouts, renderHbs, api } from 'mikser-io'
+import { vector } from 'mikser-io-vector'
+
 export default {
-  plugins: ['documents', 'layouts', 'render-hbs', 'api', 'vector'],
+  plugins: [
+    documents(),
+    layouts(),
+    renderHbs(),
+    api(),
+    vector({
+      // Connection — sqlite file path. Defaults to
+      // <runtimeFolder>/vectors.db.
+      // connection: { filename: '/var/data/vectors.db' },
 
-  vector: {
-    // Connection — sqlite file path. Defaults to
-    // <runtimeFolder>/vectors.db.
-    // connection: { filename: '/var/data/vectors.db' },
-
-    openai: {
-      apiKey: process.env.OPENAI_API_KEY,    // or set OPENAI_API_KEY directly
-      model: 'text-embedding-3-small',       // default
-      dim: 1536,                              // default; must match the model
-      // baseURL: 'https://...',              // optional, for Azure / self-hosted
-    },
-
-    base: '/vector',                      // HTTP mount path; default '/vector'
-    concurrency: 4,                       // parallel OpenAI calls per store; default 4 — per-store override via stores[name].concurrency
-
-    // Multiple named stores. Mirrors the data plugin's
-    // (query, map, pick) shape so the same mental model applies.
-    stores: {
-      documents: {
-        // Which entities go into this store. Defaults to
-        // `entity => entity.type === 'document'` when omitted.
-        // query: entity => entity.type === 'document',
-
-        // Either return a plain object from `map`...
-        map: async (entity) => ({
-          title: entity.meta?.title,
-          tags: entity.meta?.tags,
-          content: entity.content,
-        }),
-
-        // ...OR a `pick` list of paths.
-        // pick: ['meta.title', 'meta.tags', 'content'],
+      openai: {
+        apiKey: process.env.OPENAI_API_KEY,    // or set OPENAI_API_KEY directly
+        model: 'text-embedding-3-small',       // default
+        dim: 1536,                              // default; must match the model
+        // baseURL: 'https://...',              // optional, for Azure / self-hosted
       },
 
-      // Add as many stores as you need; each gets its own vec0 table.
-      layouts: {
-        query: entity => entity.type === 'layout',
-        pick: ['name'],
+      base: '/vector',                      // HTTP mount path; default '/vector'
+      concurrency: 4,                       // parallel OpenAI calls per store; default 4 — per-store override via stores[name].concurrency
 
-        // Optional: protect this store's HTTP endpoint with a bearer token.
-        // Programmatic findSimilar() is unaffected — auth is HTTP-only.
-        token: process.env.VECTOR_LAYOUTS_TOKEN,
+      // Multiple named stores. Mirrors the data plugin's
+      // (query, map, pick) shape so the same mental model applies.
+      stores: {
+        documents: {
+          // Which entities go into this store. Defaults to
+          // `entity => entity.type === 'document'` when omitted.
+          // query: entity => entity.type === 'document',
+
+          // Either return a plain object from `map`...
+          map: async (entity) => ({
+            title: entity.meta?.title,
+            tags: entity.meta?.tags,
+            content: entity.content,
+          }),
+
+          // ...OR a `pick` list of paths.
+          // pick: ['meta.title', 'meta.tags', 'content'],
+        },
+
+        // Add as many stores as you need; each gets its own vec0 table.
+        layouts: {
+          query: entity => entity.type === 'layout',
+          pick: ['name'],
+
+          // Optional: protect this store's HTTP endpoint with a bearer token.
+          // Programmatic findSimilar() is unaffected — auth is HTTP-only.
+          token: process.env.VECTOR_LAYOUTS_TOKEN,
+        },
       },
-    },
-  },
+    }),
+  ],
 }
 ```
 
-Provide your OpenAI key either inline (`vector.openai.apiKey`) or as `OPENAI_API_KEY` in the environment.
+Provide your OpenAI key either inline (`vector({ openai: { apiKey } })`) or as `OPENAI_API_KEY` in the environment.
 
 ## How it indexes
 
