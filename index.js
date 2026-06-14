@@ -178,9 +178,13 @@ export function vector(options = {}) {
             })
 
             runtime.options.app.use(base, router)
-            const location = runtime.options.port
-                ? `http://localhost:${runtime.options.port}${base}/:storeName`
-                : `${base}/:storeName`
+            // Public --url wins for operator-clickable share-this links;
+            // localhost:port is the fallback when only the local listener
+            // is configured; bare path is the last resort for external-app
+            // setups where the engine doesn't own the listener.
+            const origin = runtime.options.url
+                ?? (runtime.options.port ? `http://localhost:${runtime.options.port}` : null)
+            const location = origin ? `${origin}${base}/:storeName` : `${base}/:storeName`
             logger.info('Vector search mounted: %s', location)
         }
     })
