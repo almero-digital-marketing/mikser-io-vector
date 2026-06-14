@@ -1,9 +1,9 @@
-import OpenAI from 'openai'
 import _ from 'lodash'
 import pMap from 'p-map'
 import * as sqliteVec from 'sqlite-vec'
 import { encode as toonEncode } from '@toon-format/toon'
 import { z } from 'zod'
+import { embed as aiEmbed } from 'ai'
 import { createStore } from './src/store.js'
 
 export function vector(options = {}) {
@@ -24,24 +24,20 @@ export function vector(options = {}) {
     const stores = config.stores ?? {}
 
     let store
-    let openai
-    let model
-    let dim
+    let model      // Vercel AI SDK embedding model — opaque object the user passed.
+    let dim        // Probed once at init from a sample embedding; sqlite-vec
+                   // needs it at schema-creation time.
 
-    async function embed(text) {
-        const { data } = await openai.embeddings.create({
-            model,
-            input: text,
-            dimensions: dim,
-        })
-        return new Float32Array(data[0].embedding)
+    async function embed(text, { signal } = {}) {
+        const { embedding } = await aiEmbed({ model, value: text, abortSignal: signal })
+        return new Float32Array(embedding)
     }
 
-    async function findSimilar(storeName, text, { limit = 5 } = {}) {
+    async function findSimilar(storeName, text, { limit = 5, signal } = {}) {
         if (!stores[storeName]) {
             throw new Error(`Unknown vector store: ${storeName}`)
         }
-        const vec = await embed(text)
+        const vec = await embed(text, { signal })
         return store.findSimilar(storeName, vec, limit)
     }
 
@@ -79,20 +75,32 @@ export function vector(options = {}) {
     onLoaded(async () => {
         const logger = useLogger()
 
-        const apiKey = config.openai?.apiKey ?? process.env.OPENAI_API_KEY
-        if (!apiKey) {
+        // Embedding model: a Vercel AI SDK embedding-model factory return,
+        // passed by the user. Provider-agnostic by design — users `npm
+        // install @ai-sdk/openai` (or anthropic / mistral / cohere / etc.)
+        // and pass the model factory through:
+        //
+        //   vector({ model: openai.embedding('text-embedding-3-small') })
+        //
+        // We don't carry the provider package here; the SDK kernel ('ai')
+        // is enough for embed() to dispatch through the model's own spec.
+        model = config.model
+        if (!model || typeof model.doEmbed !== 'function') {
             throw new Error(
-                'Vector plugin requires an OpenAI API key. ' +
-                'Set vector.openai.apiKey in mikser.config.js, ' +
-                'or export OPENAI_API_KEY in the environment.'
+                'Vector plugin requires a `model` option — a Vercel AI SDK ' +
+                'embedding model. Example:\n' +
+                "    import { openai } from '@ai-sdk/openai'\n" +
+                "    vector({ model: openai.embedding('text-embedding-3-small'), stores: {...} })"
             )
         }
-        openai = new OpenAI({
-            apiKey,
-            baseURL: config.openai?.baseURL,
-        })
-        model = config.openai?.model ?? 'text-embedding-3-small'
-        dim = config.openai?.dim ?? 1536
+
+        // Probe dimension via one sample embedding. sqlite-vec needs the
+        // exact dim at vec0-table creation; rather than asking the user
+        // to maintain a separate `dim` config that has to match the
+        // model's actual output, we ask the model. One round-trip at
+        // startup; reusable across every embed afterward.
+        const probe = await aiEmbed({ model, value: 'mikser' })
+        dim = probe.embedding.length
 
         const db = useDatabase()
         if (!db?.isOpen) {
@@ -109,8 +117,11 @@ export function vector(options = {}) {
         })
 
         logger.info(
-            'Vector store initialized: %s (model=%s, dim=%d, stores=[%s])',
-            store.describe(), model, dim,
+            'Vector store initialized: %s (provider=%s, model=%s, dim=%d, stores=[%s])',
+            store.describe(),
+            model.provider ?? 'unknown',
+            model.modelId ?? '<embedding>',
+            dim,
             Object.keys(stores).join(', ') || '<none>'
         )
 
@@ -189,7 +200,7 @@ export function vector(options = {}) {
             'Semantic search over a configured vector store. Returns the top-N items closest to the query in embedding space, each with its original mapped data attached. Use this to answer "find pages similar to X" or "which entities are about Y" where exact filtering via mikser_query_entities would miss synonyms, translations, and paraphrases. Available store names are configured under vector.stores in mikser.config.js and visible in the mikser://config resource.',
             {
                 store: z.string().describe('Vector store name. Configured under vector.stores in mikser.config.js. Read mikser://config to discover what stores exist.'),
-                query: z.string().describe('Free-text query. Embedded via the configured OpenAI model and matched against the store via cosine similarity.'),
+                query: z.string().describe('Free-text query. Embedded via the configured AI-SDK embedding model (OpenAI / Anthropic / Mistral / etc.) and matched against the store via cosine similarity.'),
                 limit: z.number().int().min(1).max(50).optional().describe('Max results to return. Default 5, capped at 50.'),
             },
             async ({ store, query, limit = 5 }) => {
@@ -264,7 +275,7 @@ export function vector(options = {}) {
                     }
 
                     try {
-                        const vec = await embed(result.text)
+                        const vec = await embed(result.text, { signal })
                         await store.upsert(storeName, entity.id, vec, result.data)
                         logger.debug('Vector embedded %s: %s', storeName, entity.id)
                     } catch (err) {

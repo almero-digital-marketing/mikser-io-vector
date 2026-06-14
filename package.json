@@ -1,7 +1,7 @@
 {
   "name": "mikser-io-vector",
   "version": "2.0.0",
-  "description": "OpenAI embeddings + sqlite-vec storage and search for mikser-io",
+  "description": "Provider-agnostic embeddings (Vercel AI SDK) + sqlite-vec storage and search for mikser-io",
   "main": "index.js",
   "type": "module",
   "scripts": {},
@@ -20,9 +20,9 @@
   },
   "dependencies": {
     "@toon-format/toon": "^2.3.0",
+    "ai": "^6.0.205",
     "better-sqlite3": "^12.10.0",
     "lodash": "^4.18.1",
-    "openai": "^6.42.0",
     "p-map": "^7.0.4",
     "sqlite-vec": "^0.1.9",
     "zod": "^4.4.3"

@@ -1,6 +1,6 @@
 # mikser-io-vector
 
-OpenAI embeddings + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
+Provider-agnostic embeddings (via the [Vercel AI SDK](https://sdk.vercel.ai/)) + [sqlite-vec](https://www.npmjs.com/package/sqlite-vec) storage and search for [mikser-io](https://github.com/almero-digital-marketing/mikser-io). Indexes entities as they flow through the lifecycle, exposes a `findSimilar()` runtime helper, and (when a shared Express app is available) mounts a `POST /vector/:storeName` HTTP search endpoint.
 
 ## Why semantic search inside an SSG
 
@@ -16,14 +16,20 @@ The embedding source object is also stored alongside each vector and returned wi
 
 ```bash
 npm install mikser-io-vector
+# plus the AI-SDK provider for whichever embedding model you want:
+npm install @ai-sdk/openai           # or @ai-sdk/anthropic, @ai-sdk/mistral, @ai-sdk/cohere, @ai-sdk/google, etc.
 ```
+
+The plugin is provider-agnostic — it talks to whatever embedding model you hand it, as long as it implements the AI SDK's `EmbeddingModelV2` spec. Switch providers by changing one line in your config.
 
 ## Configure
 
 ```js
 // mikser.config.js
-import { documents, files, layouts, renderHbs, api } from 'mikser-io'
+import { documents, files, renderHbs, api } from 'mikser-io'
+import { layouts } from 'mikser-io-layouts'
 import { vector } from 'mikser-io-vector'
+import { openai } from '@ai-sdk/openai'   // or @ai-sdk/anthropic, etc.
 
 export default {
   plugins: [
@@ -32,19 +38,15 @@ export default {
     renderHbs(),
     api(),
     vector({
-      // Connection — sqlite file path. Defaults to
-      // <runtimeFolder>/vectors.db.
-      // connection: { filename: '/var/data/vectors.db' },
-
-      openai: {
-        apiKey: process.env.OPENAI_API_KEY,    // or set OPENAI_API_KEY directly
-        model: 'text-embedding-3-small',       // default
-        dim: 1536,                              // default; must match the model
-        // baseURL: 'https://...',              // optional, for Azure / self-hosted
-      },
+      // The embedding model is a Vercel AI SDK model factory return.
+      // Provider, model name, and any provider-specific options live
+      // here — vector doesn't reinterpret any of that.
+      model: openai.embedding('text-embedding-3-small'),
+      // dim is probed automatically from a one-shot sample embedding
+      // at startup, so it always matches the model's actual output.
 
       base: '/vector',                      // HTTP mount path; default '/vector'
-      concurrency: 4,                       // parallel OpenAI calls per store; default 4 — per-store override via stores[name].concurrency
+      concurrency: 4,                       // parallel embedding calls per store; default 4 — per-store override via stores[name].concurrency
 
       // Multiple named stores. Mirrors the data plugin's
       // (query, map, pick) shape so the same mental model applies.
@@ -80,7 +82,30 @@ export default {
 }
 ```
 
-Provide your OpenAI key either inline (`vector({ openai: { apiKey } })`) or as `OPENAI_API_KEY` in the environment.
+Provider credentials live where the AI SDK provider expects them — typically `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / etc. in the environment. The vector plugin holds no auth state of its own; it just hands the model to the SDK.
+
+### Switching provider
+
+```js
+// OpenAI (default in most examples)
+import { openai } from '@ai-sdk/openai'
+vector({ model: openai.embedding('text-embedding-3-small'), stores })
+
+// Anthropic
+import { anthropic } from '@ai-sdk/anthropic'
+vector({ model: anthropic.embedding('voyage-3'), stores })
+
+// Mistral
+import { mistral } from '@ai-sdk/mistral'
+vector({ model: mistral.textEmbeddingModel('mistral-embed'), stores })
+
+// Local via Ollama (through the openai-compatible provider)
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+const ollama = createOpenAICompatible({ baseURL: 'http://localhost:11434/v1', name: 'ollama' })
+vector({ model: ollama.embedding('nomic-embed-text'), stores })
+```
+
+Changing model also changes `dim` (probed at startup). After a model swap the stores are wiped on the next `--clear`, or you can drop `runtime/mikser.sqlite` and let mikser rebuild.
 
 ## How it indexes
 
@@ -89,7 +114,7 @@ The plugin hooks `onBeforeRender` and iterates the journal for `CREATE`, `UPDATE
 1. Apply `query(entity)` to filter — defaults to `entity => entity.type === 'document'` when not provided.
 2. Build a plain object via `map(entity)` (async, must return an object) or `pick` (path → value). If both are empty, `entity.content` is embedded as-is.
 3. Serialize the object via [TOON](https://github.com/toon-format/toon) — a compact, schema-aware textual format that's lighter on tokens than JSON and gives the embedding model a cleaner signal than ad-hoc string concatenation.
-4. Compute the embedding via OpenAI and upsert into the store's vec0 table.
+4. Compute the embedding via the configured AI-SDK model and upsert into the store's vec0 table.
 5. Deletes remove the vector and its rowid mapping.
 
 In watch mode, only changed entities are re-embedded each cycle. In a one-shot build every CREATE re-embeds — keep that in mind for API cost.
