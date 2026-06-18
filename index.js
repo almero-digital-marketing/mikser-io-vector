@@ -15,6 +15,7 @@ export function vector(options = {}) {
         useJournal,
         useDatabase,
         registerSchema,
+        registerRoute,
         onProvision,
         constants: { OPERATION },
     }) => {
@@ -178,14 +179,17 @@ export function vector(options = {}) {
             })
 
             runtime.options.app.use(base, router)
-            // Public --url wins for operator-clickable share-this links;
-            // localhost:port is the fallback when only the local listener
-            // is configured; bare path is the last resort for external-app
-            // setups where the engine doesn't own the listener.
-            const origin = runtime.options.url
-                ?? (runtime.options.port ? `http://localhost:${runtime.options.port}` : null)
-            const location = origin ? `${origin}${base}/:storeName` : `${base}/:storeName`
-            logger.info('Vector search mounted: %s', location)
+            // Public, non-streaming search endpoint. Auth is per-store
+            // (a store may carry a token, enforced in-handler); the mount
+            // itself isn't loopback-gated, so a facade should proxy it.
+            registerRoute({
+                path:        base,
+                plugin:      'vector',
+                reachability: 'public',
+                streaming:   false,
+                label:       'Vector search',
+                displayPath: `${base}/:storeName`,
+            })
         }
     })
 
