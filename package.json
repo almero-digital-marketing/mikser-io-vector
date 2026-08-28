@@ -1,10 +1,12 @@
 {
   "name": "mikser-io-vector",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Provider-agnostic embeddings (Vercel AI SDK) + sqlite-vec storage and search for mikser-io",
   "main": "index.js",
   "type": "module",
-  "scripts": {},
+  "scripts": {
+    "test": "node --no-warnings --test --test-reporter=spec 'test/**/*.test.js'"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/almero-digital-marketing/mikser-io-vector.git"
@@ -28,6 +30,7 @@
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "mikser-io": "file:../mikser-io"
   }
 }
