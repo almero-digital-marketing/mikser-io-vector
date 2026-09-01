@@ -100,7 +100,34 @@ export function vector(options = {}) {
         // to maintain a separate `dim` config that has to match the
         // model's actual output, we ask the model. One round-trip at
         // startup; reusable across every embed afterward.
-        const probe = await aiEmbed({ model, value: 'mikser' })
+        // This probe is a live call to the embedding provider, so every way a
+        // network service can fail arrives here: no credential, a rejected
+        // one, a rate limit, an outage. None of those are reasons to fail a
+        // static build. The site does not need a search index to render, and
+        // taking the whole build down over a missing key means a contributor
+        // without provider access cannot build the site at all.
+        //
+        // So it reports a FAULT and leaves the plugin dormant. `store` stays
+        // undefined, which onBeforeRender already reads as "not indexing", and
+        // findSimilar / the HTTP route / the MCP tool below are never
+        // registered — an agent gets "no such tool" rather than an empty
+        // result set that looks like an answer.
+        let probe
+        try {
+            probe = await aiEmbed({ model, value: 'mikser' })
+        } catch (err) {
+            logger.error(
+                {
+                    code: 'vector-embedding-unavailable',
+                    provider: model.provider ?? 'unknown',
+                    model: model.modelId ?? '<embedding>',
+                },
+                'Vector search is disabled: the embedding model could not be reached (%s). '
+                + 'The build is otherwise unaffected — pages render normally — but nothing is '
+                + 'indexed this run and findSimilar is not available.',
+                err.message)
+            return
+        }
         dim = probe.embedding.length
 
         const db = useDatabase()
