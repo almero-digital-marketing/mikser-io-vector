@@ -59,6 +59,7 @@ function harness(model) {
         useDatabase:     () => { throw new Error('database must not be touched when the probe failed') },
         registerSchema:  () => {},
         registerRoute:   () => {},
+        registerTool:    () => {},
         constants: { OPERATION: { CREATE: 'create', UPDATE: 'update', DELETE: 'delete' } },
     })
     return { hooks, logged, runtime }

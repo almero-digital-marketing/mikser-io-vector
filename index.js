@@ -16,6 +16,7 @@ export function vector(options = {}) {
         useDatabase,
         registerSchema,
         registerRoute,
+        registerTool,
         onProvision,
         constants: { OPERATION },
     }) => {
@@ -220,23 +221,22 @@ export function vector(options = {}) {
         }
     })
 
-    // MCP tool registration. Same pattern as the api / layouts /
-    // preview plugins in mikser-io core: gate on runtime.options.mcp
-    // inside an onLoaded handler. Lives in the vector plugin (not
-    // core) per ADR-0006 — domain logic owned by the plugin, the
-    // substrate stays in core.
+    // Tool registration. Registers against the engine's tool registry,
+    // which exists whether or not the mcp plugin is installed — so there is
+    // no gate to write and no ordering rule to obey. The engine stores the
+    // BARE name and mcp prefixes on the way out, so a session still sees
+    // mikser_vector_find_similar. Lives in the vector plugin (not core) per
+    // ADR-0006 — domain logic owned by the plugin, the substrate in core.
     onLoaded(() => {
-        if (!runtime.options.mcp) return
-        const mcp = runtime.options.mcp
         const logger = useLogger()
-
-        mcp.simpleTool(
-            'mikser_vector_find_similar',
-            'Semantic search over a configured vector store. Returns the top-N items closest to the query in embedding space, each with its original mapped data attached. Use this to answer "find pages similar to X" or "which entities are about Y" where exact filtering via mikser_query_entities would miss synonyms, translations, and paraphrases. Available store names are configured under vector.stores in mikser.config.js and visible in the mikser://config resource.',
+        registerTool('vector_find_similar',
             {
-                store: z.string().describe('Vector store name. Configured under vector.stores in mikser.config.js. Read mikser://config to discover what stores exist.'),
-                query: z.string().describe('Free-text query. Embedded via the configured AI-SDK embedding model (OpenAI / Anthropic / Mistral / etc.) and matched against the store via cosine similarity.'),
-                limit: z.number().int().min(1).max(50).optional().describe('Max results to return. Default 5, capped at 50.'),
+                description: 'Semantic search over a configured vector store. Returns the top-N items closest to the query in embedding space, each with its original mapped data attached. Use this to answer "find pages similar to X" or "which entities are about Y" where exact filtering via mikser_query_entities would miss synonyms, translations, and paraphrases. Available store names are configured under vector.stores in mikser.config.js and visible in the mikser://config resource.',
+                inputSchema: {
+                    store: z.string().describe('Vector store name. Configured under vector.stores in mikser.config.js. Read mikser://config to discover what stores exist.'),
+                    query: z.string().describe('Free-text query. Embedded via the configured AI-SDK embedding model (OpenAI / Anthropic / Mistral / etc.) and matched against the store via cosine similarity.'),
+                    limit: z.number().int().min(1).max(50).optional().describe('Max results to return. Default 5, capped at 50.'),
+                },
             },
             async ({ store, query, limit = 5 }) => {
                 const ok = (data) => ({
