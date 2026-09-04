@@ -30,8 +30,8 @@
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
-    "zod": "^4.0.0",
-    "mikser-io": "file:../mikser-io"
+    "mikser-io": "^10.0.0",
+    "zod": "^4.0.0"
   },
   "allowScripts": {
     "better-sqlite3": true
