@@ -32,5 +32,8 @@
   "devDependencies": {
     "zod": "^4.0.0",
     "mikser-io": "file:../mikser-io"
+  },
+  "allowScripts": {
+    "better-sqlite3": true
   }
 }
