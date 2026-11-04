@@ -4,7 +4,9 @@ import * as sqliteVec from 'sqlite-vec'
 import { encode as toonEncode } from '@toon-format/toon'
 import { z } from 'zod'
 import { embed as aiEmbed } from 'ai'
+import { cliOption } from 'mikser-io'
 import { createStore } from './src/store.js'
+import { createEmbeddingCache, embeddingKey, resolveCachePath } from './src/cache.js'
 
 export function vector(options = {}) {
     return ({
@@ -22,6 +24,12 @@ export function vector(options = {}) {
     }) => {
     onProvision(ctx => sqliteVec.load(ctx.handle))
 
+    // Declared in the load phase, like every plugin option — the table is
+    // sealed before onLoaded runs.
+    cliOption('--clear-vectors',
+        'empty the embedding cache. On its own it only stops future cycles reusing it; '
+        + 'with --clear it re-embeds the whole site, at one paid API call per entity', false)
+
     const config = options
     const stores = config.stores ?? {}
 
@@ -29,10 +37,45 @@ export function vector(options = {}) {
     let model      // Vercel AI SDK embedding model — opaque object the user passed.
     let dim        // Probed once at init from a sample embedding; sqlite-vec
                    // needs it at schema-creation time.
+    let cache      // The embeddings this site has already paid for. See src/cache.js.
 
-    async function embed(text, { signal } = {}) {
+    // Per-cycle, so the log line can say what the cache was worth.
+    let embedded = 0
+    let reused = 0
+
+    // `remember` is what separates INDEXING from SEARCHING.
+    //
+    // An indexed entity's text comes from the working folder: a bounded set,
+    // written again identically after every wipe, and therefore worth keeping
+    // forever. A query comes from whoever is searching — an HTTP caller, an
+    // agent asking the MCP tool twelve different ways — and storing those
+    // would make an append-only cache grow with traffic rather than with the
+    // site. So queries are embedded and not kept.
+    async function embed(text, { signal, remember = false } = {}) {
+        const key = remember && cache
+            ? embeddingKey({ provider: model.provider ?? 'unknown', model: model.modelId ?? '<embedding>', dim, text })
+            : null
+        if (key) {
+            const hit = cache.get(key, dim)
+            if (hit) {
+                reused++
+                return hit
+            }
+        }
         const { embedding } = await aiEmbed({ model, value: text, abortSignal: signal })
-        return new Float32Array(embedding)
+        // Not `vector`: that is this module's own exported plugin factory, and
+        // shadowing it inside the one function that asks the model for money
+        // is a trap for whoever edits this next.
+        const computed = new Float32Array(embedding)
+        if (key) {
+            cache.set(key, computed, {
+                provider: model.provider ?? 'unknown',
+                model: model.modelId ?? '<embedding>',
+                dim,
+            })
+            embedded++
+        }
+        return computed
     }
 
     async function findSimilar(storeName, text, { limit = 5, signal } = {}) {
@@ -131,6 +174,19 @@ export function vector(options = {}) {
         }
         dim = probe.embedding.length
 
+        // Opened before the store, and deliberately not through the engine's
+        // database module: `createSqliteDatabase` carries the version and
+        // config fingerprints that decide when a cache is stale, and being
+        // thrown away on a config edit is the one thing this file must never
+        // do.
+        cache = createEmbeddingCache({
+            filename: resolveCachePath({
+                cache: config.cache,
+                runtimeFolder: runtime.options.runtimeFolder,
+            }),
+            logger,
+        })
+
         const db = useDatabase()
         if (!db?.isOpen) {
             throw new Error(
@@ -154,12 +210,22 @@ export function vector(options = {}) {
             Object.keys(stores).join(', ') || '<none>'
         )
 
-        // Honor `--clear`: wipe every store's rows so the upcoming
-        // CREATEs (mikser also clears its catalog) re-embed everything.
-        if (runtime.options.clear && Object.keys(stores).length) {
-            await store.clear()
-            logger.info('Vector store cleared: [%s]', Object.keys(stores).join(', '))
-        }
+        logger.info('Vector embedding cache: %d embedding(s) at %s', cache.count(), cache.path)
+
+        // `--clear` is NOT honoured here any more, and there is nothing left
+        // to honour it with.
+        //
+        // This used to call store.clear() on --clear "so the upcoming CREATEs
+        // re-embed everything". Both halves were wrong. The clear was already
+        // a no-op: the vec0 and ids tables live in mikser.sqlite, and the
+        // engine unlinks that whole file before any plugin's onLoaded runs,
+        // so there were no rows left to delete. And re-embedding everything is
+        // not a thing to arrange on purpose — it is a paid API call per
+        // entity, which is what the cache above now stands in front of.
+        //
+        // What --clear means for this plugin is: the vec0 index is gone and
+        // will be rebuilt from the cache, at the price of sqlite inserts.
+        // --clear-vectors is the button that spends money, and it says so.
 
         // Expose programmatic API
         runtime.findSimilar = findSimilar
@@ -272,7 +338,42 @@ export function vector(options = {}) {
 
     onBeforeRender(async (signal) => {
         const logger = useLogger()
+
+        // --clear-vectors: forget every embedding and pay for it again.
+        //
+        // Read per cycle rather than in onLoaded, so a running watcher can be
+        // asked for it: onLoaded runs once per process, and a flag read there
+        // is accepted over the socket, reaches nothing and reports success.
+        // Taken off runtime.options once acted on, so `--watch
+        // --clear-vectors` empties the cache on its first cycle rather than
+        // on every save for the life of the process.
+        //
+        // It empties the cache and nothing else. Re-embedding is what the
+        // CYCLE does, and a cycle only reaches the entities it was given —
+        // which, on a build where nothing changed, is none of them. So the
+        // line says what actually happens rather than what the flag's name
+        // suggests: pair it with --clear, and every entity arrives as a
+        // CREATE, misses the empty cache, and is embedded again.
+        //
+        // The index is deliberately left alone. Emptying it here would take
+        // search down until something re-indexed, which on a quiet watcher is
+        // never.
+        if (runtime.options.clearVectors) {
+            runtime.options.clearVectors = false
+            if (!cache) {
+                logger.warn('--clear-vectors: nothing to clear, the embedding model was '
+                    + 'unavailable at startup and this plugin is dormant')
+            } else {
+                const removed = cache.clear()
+                logger.info('Vector embedding cache cleared: %d embedding(s). Entities are embedded '
+                    + 'again as they are indexed; run with --clear to re-index all of them', removed)
+            }
+        }
+
         if (!store || Object.keys(stores).length === 0) return
+
+        embedded = 0
+        reused = 0
 
         // Per-store concurrency for OpenAI embedding calls. Low default
         // (4) keeps us comfortably under the default rate limits; bump via
@@ -310,7 +411,7 @@ export function vector(options = {}) {
                     }
 
                     try {
-                        const vec = await embed(result.text, { signal })
+                        const vec = await embed(result.text, { signal, remember: true })
                         await store.upsert(storeName, entity.id, vec, result.data)
                         logger.debug('Vector embedded %s: %s', storeName, entity.id)
                     } catch (err) {
@@ -323,6 +424,16 @@ export function vector(options = {}) {
                 },
                 { concurrency, signal },
             )
+        }
+
+        // Only when something happened. An idle watch cycle has nothing to
+        // say, and a line per save is how a useful count becomes noise.
+        //
+        // Both numbers, because the reused one is the whole point: after a
+        // cache wipe this reads `0 embedded, 11003 reused`, which is the
+        // difference between rebuilding an index and buying it again.
+        if (embedded || reused) {
+            logger.info('Vector: %d embedded, %d reused from the cache', embedded, reused)
         }
     })
         // Names this package to the runtime's loaded-plugin record, so

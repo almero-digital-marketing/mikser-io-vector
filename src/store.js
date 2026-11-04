@@ -127,6 +127,15 @@ export async function createStore({ db, dim, stores, registerSchema }) {
             }))
         },
 
+        // Nothing in the plugin calls this any more.
+        //
+        // It used to run on `--clear`, which was already a no-op: these tables
+        // live in `mikser.sqlite`, and the engine unlinks that whole file
+        // before any plugin's onLoaded. It is kept because emptying a store is
+        // a real operation a caller may want, and because the tests for the
+        // cascade need a way back to empty — not because `--clear` still
+        // reaches it. What `--clear-vectors` empties is the embedding cache,
+        // which is the only thing here a rebuild cannot reproduce for free.
         async clear() {
             for (const storeName of Object.keys(stores)) {
                 db.exec(`DELETE FROM ${vecTable(storeName)}`)
