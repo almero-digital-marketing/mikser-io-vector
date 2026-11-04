@@ -1,6 +1,6 @@
 {
   "name": "mikser-io-vector",
-  "version": "11.0.1",
+  "version": "11.1.0",
   "description": "Provider-agnostic embeddings (Vercel AI SDK) + sqlite-vec storage and search for mikser-io",
   "main": "index.js",
   "type": "module",
